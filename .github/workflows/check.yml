@@ -1,0 +1,77 @@
+name: slot-watch
+
+on:
+  schedule:
+    # Every 15 minutes. GitHub queues cron jobs on a best-effort basis, so a
+    # run can land a few minutes late when their runners are busy.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      months:
+        description: 'Months to check, comma-separated YYYY-MM (blank = the usual ones)'
+        type: string
+        default: ''
+      seed:
+        description: 'Record current slots WITHOUT emailing (use after changing months)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# Never let two checks race each other onto the same snapshot commit.
+concurrency:
+  group: slot-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Calendly availability
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+          WATCH_MONTHS: ${{ inputs.months || '2026-09,2026-10' }}
+          # Which page is being watched is kept in secrets, not in the repo.
+          CALENDLY_PROFILE: ${{ secrets.CALENDLY_PROFILE }}
+          CALENDLY_EVENT: ${{ secrets.CALENDLY_EVENT }}
+          CALENDLY_TZ: Europe/Amsterdam
+          SEED: ${{ inputs.seed && '1' || '' }}
+        run: python3 check_availability.py
+
+      - name: Persist snapshot
+        run: |
+          set -euo pipefail
+          branch="$(git rev-parse --abbrev-ref HEAD)"
+          git config user.name 'slot-watch'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A state/
+
+          if git diff --cached --quiet; then
+            # Nothing changed. GitHub disables scheduled workflows in repos
+            # with no activity for 60 days, so commit a heartbeat now and then.
+            age=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+            if [ "$age" -lt 20 ]; then
+              echo "no change; last commit ${age}d ago, schedule still safe"
+              exit 0
+            fi
+            date -u +%FT%TZ > state/heartbeat.txt
+            git add state/heartbeat.txt
+            git commit -q -m 'heartbeat: keep the schedule from being auto-disabled'
+          else
+            git commit -q -m "state: availability snapshot $(date -u +%FT%TZ)"
+          fi
+
+          for _ in 1 2 3; do
+            if git push -q; then exit 0; fi
+            git fetch -q origin
+            git rebase -q "origin/$branch" || git rebase --abort || true
+            sleep 3
+          done
+          # A dropped snapshot is not worth failing (and emailing) over - the
+          # next run recomputes it from scratch.
+          echo "::warning::could not push snapshot; next run will retry"
