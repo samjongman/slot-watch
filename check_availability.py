@@ -6,10 +6,13 @@ calls), compares the available slots against the previous run's snapshot, and
 emails via Resend only when a slot appears that was not there before.
 
 Configured entirely through environment variables:
-  RESEND_API_KEY   required - Resend API key
-  ALERT_TO         required - where the alert goes
-  ALERT_FROM       sender (default onboarding@resend.dev)
-  ALERT_LABEL      name shown in the email subject
+At least one notification channel must be configured; both can be.
+  RESEND_API_KEY   email: Resend API key
+  ALERT_TO         email: where the alert goes
+  ALERT_FROM       email: sender (default onboarding@resend.dev)
+  WHATSAPP_PHONE   whatsapp: recipient in international form, e.g. +31612345678
+  CALLMEBOT_APIKEY whatsapp: key CallMeBot sends you on activation
+  ALERT_LABEL      name shown in the alert
   CALENDLY_PROFILE required - the <profile> in calendly.com/<profile>/<event>
   CALENDLY_EVENT   required - the <event> in that same URL
   WATCH_MONTHS     comma-separated YYYY-MM
@@ -35,6 +38,8 @@ RESEND_KEY = os.environ.get("RESEND_API_KEY", "")
 ALERT_TO = os.environ.get("ALERT_TO", "")
 ALERT_FROM = os.environ.get("ALERT_FROM", "onboarding@resend.dev")
 ALERT_LABEL = os.environ.get("ALERT_LABEL", "Calendly")
+WHATSAPP_PHONE = os.environ.get("WHATSAPP_PHONE", "")
+CALLMEBOT_APIKEY = os.environ.get("CALLMEBOT_APIKEY", "")
 SEED = os.environ.get("SEED", "") == "1"
 
 BOOKING_URL = "https://calendly.com/{}/{}".format(PROFILE, EVENT)
@@ -179,6 +184,62 @@ def send_email(new_spots, all_spots):
         raise RuntimeError("Resend rejected the send: HTTP {} {}".format(e.code, detail))
 
 
+def send_whatsapp(new_spots, all_spots):
+    n = len(new_spots)
+    plural = "ken" if n != 1 else ""
+    shown = new_spots[:6]
+    lines = ["*{}*: {} nieuwe plek{} vrij".format(ALERT_LABEL, n, plural)]
+    lines += ["- " + pretty(s) for s in shown]
+    if n > len(shown):
+        lines.append("...en nog {} andere".format(n - len(shown)))
+    lines.append(BOOKING_URL)
+    text = "\n".join(lines)
+    # CallMeBot takes the message in the query string, so stay well under the
+    # practical URL length ceiling.
+    if len(text) > 900:
+        text = text[:880] + "..."
+
+    q = urllib.parse.urlencode({
+        "phone": WHATSAPP_PHONE,
+        "text": text,
+        "apikey": CALLMEBOT_APIKEY,
+    })
+    req = urllib.request.Request("https://api.callmebot.com/whatsapp.php?" + q,
+                                 headers={"User-Agent": "slot-watch/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        raise RuntimeError("CallMeBot HTTP {}: {}".format(
+            e.code, e.read().decode("utf-8", "replace")[:200]))
+    if "ERROR" in body.upper():
+        # CallMeBot reports refusals in a 200 body, not in the status code.
+        raise RuntimeError("CallMeBot refused: {}".format(body[:200]))
+    log("whatsapp sent")
+
+
+def notify(new_spots, all_spots):
+    """Send through every configured channel.
+
+    Returns True if at least one got through - one channel being down must
+    not stop the others, and must not lose the alert.
+    """
+    channels = []
+    if RESEND_KEY and ALERT_TO:
+        channels.append(("email", send_email))
+    if WHATSAPP_PHONE and CALLMEBOT_APIKEY:
+        channels.append(("whatsapp", send_whatsapp))
+
+    delivered = False
+    for name, fn in channels:
+        try:
+            fn(new_spots, all_spots)
+            delivered = True
+        except Exception as exc:
+            log("WARNING: {} channel failed: {}".format(name, exc))
+    return delivered
+
+
 def load_state():
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
@@ -207,8 +268,11 @@ def main():
     if not MONTHS:
         log("ERROR: WATCH_MONTHS must be set, e.g. 2026-10,2026-11")
         return 1
-    if not SEED and (not RESEND_KEY or not ALERT_TO):
-        log("ERROR: RESEND_API_KEY and ALERT_TO must both be set")
+    has_email = bool(RESEND_KEY and ALERT_TO)
+    has_whatsapp = bool(WHATSAPP_PHONE and CALLMEBOT_APIKEY)
+    if not SEED and not has_email and not has_whatsapp:
+        log("ERROR: configure email (RESEND_API_KEY + ALERT_TO) or "
+            "whatsapp (WHATSAPP_PHONE + CALLMEBOT_APIKEY)")
         return 1
 
     uuid = event_uuid()
@@ -234,9 +298,11 @@ def main():
         return 0
 
     log("{} NEW slot(s)".format(len(new)))
-    # Save only after the mail is away - a failed send must retry next run,
-    # not get swallowed by an updated snapshot.
-    send_email(new, current)
+    # Save only once something is away - a wholly failed send must retry on
+    # the next run, not get swallowed by an updated snapshot.
+    if not notify(new, current):
+        log("ERROR: no channel accepted the alert; snapshot left untouched")
+        return 1
     save_state(current)
     return 0
 

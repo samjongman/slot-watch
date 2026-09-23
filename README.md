@@ -31,15 +31,32 @@ lives in this repo.
 | `CALENDLY_PROFILE` | the `<profile>` in `calendly.com/<profile>/<event>` |
 | `CALENDLY_EVENT` | the `<event>` in that same URL |
 | `WATCH_MONTHS` | comma-separated `YYYY-MM` |
-| `RESEND_API_KEY` | [Resend](https://resend.com) API key |
-| `ALERT_TO` | recipient address |
-| `ALERT_FROM` | sender, defaults to `onboarding@resend.dev` |
-| `ALERT_LABEL` | name shown in the email subject |
+| `RESEND_API_KEY` | email: [Resend](https://resend.com) API key |
+| `ALERT_TO` | email: recipient address |
+| `ALERT_FROM` | email: sender, defaults to `onboarding@resend.dev` |
+| `WHATSAPP_PHONE` | whatsapp: recipient, e.g. `+31612345678` |
+| `CALLMEBOT_APIKEY` | whatsapp: key from CallMeBot activation |
+| `ALERT_LABEL` | name shown in the alert |
 | `CALENDLY_TZ` | timezone the times are displayed in |
 | `SEED` | `1` records current slots without emailing |
 
+## Notification channels
+
+Email, WhatsApp, or both. Configure at least one; each is enabled by having
+its variables set. If one channel fails the others still go out, and the
+snapshot is only advanced once something was delivered - so a dead channel
+cannot silently swallow an alert.
+
 On Resend's free tier without a verified domain, the built-in
 `onboarding@resend.dev` sender only delivers to the account's own address.
+
+WhatsApp goes through [CallMeBot](https://www.callmebot.com), a free service
+for personal notifications: message its number on WhatsApp to activate and it
+replies with an API key. It is a hobby project with no uptime guarantee, and
+message text passes through its server, so pairing it with email is wise.
+Meta's official WhatsApp Business API is a poor fit here - alerts sent more
+than 24 hours after your last reply require a pre-approved, per-message-billed
+template.
 
 Run locally:
 

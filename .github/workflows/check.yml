@@ -35,6 +35,8 @@ jobs:
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
+          WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
           WATCH_MONTHS: ${{ inputs.months || '2026-09,2026-10' }}
           # Which page is being watched is kept in secrets, not in the repo.
           CALENDLY_PROFILE: ${{ secrets.CALENDLY_PROFILE }}
